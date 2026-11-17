@@ -318,3 +318,172 @@ window.addEventListener("hashchange",route);
 </script>
 </body>
 </html>
+window.addEventListener("hashchange",route);
+})();
+</script>
+
+<!-- FarmEdge additional features -->
+<script src="addons.js"></script>
+
+</body>
+</html>#!/usr/bin/env bash
+# Run from the folder that contains your FarmEdge index.html and these files.
+set -e
+[ -f index.html ] || { echo "index.html not found in this folder"; exit 1; }
+if grep -q "addons.js" index.html; then echo "Already applied."; else
+  cp index.html index.html.bak
+  perl -0pi -e 's#</head>#<link rel="manifest" href="manifest.webmanifest">\n<meta name="theme-color" content="\#0f7a52">\n<link rel="icon" href="icon.svg">\n</head>#; s#</body>#<script src="addons.js"></script>\n</body>#' index.html
+  echo "index.html patched (backup: index.html.bak)"
+fi
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git add index.html addons.js sw.js manifest.webmanifest icon.svg
+  git commit -m "Add Filipino toggle, offline support, backup/restore, delete records, phone cards" && echo "Committed."
+else echo "Not a git repo: run 'git init' first if you want to commit."; fi/* FarmEdge V2 add-ons: Filipino toggle, offline/PWA, backup, delete, phone cards, quick-add button.
+   Loaded after the main script. Touches only existing ids/classes and fails quietly if one is missing. */
+(function () {
+  'use strict';
+  var $ = function (i) { return document.getElementById(i); };
+  var LS = window.localStorage;
+
+  /* ---------- styles ---------- */
+  var css = [
+    '.fab{display:none;position:fixed;right:14px;bottom:calc(86px + env(safe-area-inset-bottom,0px));z-index:11;border:0;background:var(--ac);color:#1d1400;font:700 15px inherit;min-height:52px;padding:0 18px;border-radius:999px;box-shadow:0 8px 20px rgba(0,0,0,.3);align-items:center;gap:6px;cursor:pointer}',
+    '.toast{position:fixed;left:50%;bottom:calc(150px + env(safe-area-inset-bottom,0px));transform:translate(-50%,16px);background:#10261b;color:#fff;padding:12px 18px;border-radius:12px;font-weight:600;max-width:calc(100vw - 32px);opacity:0;pointer-events:none;transition:.25s;z-index:30}',
+    '.toast.on{opacity:1;transform:translate(-50%,0)}',
+    '.off{display:none;font:700 11px inherit;padding:3px 9px;border-radius:999px;color:var(--bad);border:1px solid var(--bad)}',
+    'body.offline .off{display:inline-block}',
+    '.dz{margin-left:auto;border:1px solid var(--line);background:var(--surf2);color:var(--bad);border-radius:10px;padding:6px 10px;font:600 12px inherit;min-height:36px;cursor:pointer}',
+    '@media(max-width:899px){.fab{display:flex}body.on-plan .fab{display:none}}',
+    '@media(max-width:560px){.cardtbl,.cardtbl tbody{display:block}.cardtbl tr:first-child{display:none}.cardtbl tr{display:block;border:1px solid var(--line);border-radius:14px;padding:6px 12px;margin-bottom:10px}.cardtbl td{display:flex;justify-content:space-between;gap:12px;border:0;border-bottom:1px solid var(--line);padding:8px 0}.cardtbl td:last-child{border:0}.cardtbl td::before{content:attr(data-l);color:var(--mu);font-weight:600}}',
+    '@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}'
+  ].join('');
+  var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
+
+  /* ---------- toast ---------- */
+  var tt = document.createElement('div'); tt.className = 'toast'; tt.setAttribute('role', 'status'); document.body.appendChild(tt);
+  var tm;
+  function toast(m) { tt.textContent = m; tt.classList.add('on'); clearTimeout(tm); tm = setTimeout(function () { tt.classList.remove('on'); }, 3200); }
+
+  /* ---------- Filipino toggle (whole-label match; calculated/explanatory text stays English) ---------- */
+  var D = {
+    'Home':'Simula','Crops':'Mga Pananim','Weather':'Panahon','Risk':'Panganib','Records':'Mga Talaan','Profit':'Kita','Roadmap':'Plano',
+    'Farmer':'Magsasaka','Field officer':'Opisyal sa bukid','Price board':'Talaan ng Presyo','Supply vs. demand':'Suplay laban sa demand',
+    'Log a planting':'Itala ang pagtatanim','Log a price you saw':'Itala ang presyong nakita mo','Save planting':'I-save ang pagtatanim','Save price':'I-save ang presyo',
+    'Crop':'Pananim','Area (hectares)':'Sukat (ektarya)','Expected harvest (kg)':'Inaasahang ani (kg)','Planting date':'Petsa ng pagtatanim','Expected harvest date':'Inaasahang petsa ng ani',
+    'Price':'Presyo','Unit':'Yunit','Date observed':'Petsa ng obserbasyon','Status':'Katayuan','Market or source':'Palengke o pinagmulan',
+    'Planting records':'Mga talaan ng pagtatanim','Price observations':'Mga obserbasyon sa presyo','Crop database':'Database ng pananim','Province':'Lalawigan','Municipality':'Munisipalidad',
+    'Barangay (optional)':'Barangay (opsyonal)','Suggest a crop or variety':'Magmungkahi ng pananim o barayti','Variety (optional)':'Barayti (opsyonal)','Evidence or source':'Ebidensya o pinagmulan',
+    'Submit for verification':'Isumite para ma-verify','7-day forecast':'Taya ng panahon sa 7 araw','Risk analysis':'Pagsusuri ng panganib','Results':'Mga resulta',
+    'Profitability calculator':'Calculator ng kita','Result':'Resulta','Total production cost':'Kabuuang gastos sa produksyon','Gross revenue':'Kabuuang kita (gross)',
+    'Estimated net profit':'Tinatayang netong kita','Break-even selling price':'Presyong break-even','Seeds / seedlings (₱)':'Binhi / punla (₱)','Fertilizer (₱)':'Abono (₱)',
+    'Pesticide (₱)':'Pestisidyo (₱)','Labor (₱)':'Paggawa (₱)','Irrigation (₱)':'Patubig (₱)','Transportation (₱)':'Transportasyon (₱)','Other costs (₱)':'Iba pang gastos (₱)',
+    'Land area (ha)':'Sukat ng lupa (ha)','Estimated harvest (kg)':'Tinatayang ani (kg)','Expected selling price (₱/kg)':'Inaasahang presyo ng benta (₱/kg)',
+    'Low':'Mababa','Moderate':'Katamtaman','High':'Mataas','Critical':'Kritikal','Not enough data':'Kulang ang datos','Verified':'Na-verify','Pending':'Naghihintay','Verify':'I-verify',
+    'Build roadmap':'Plano ng pagbuo','In progress':'Isinasagawa','Next':'Susunod','Fresh':'Bago','User-submitted':'Isinumite ng user','Estimated':'Tantiya',
+    'Back up my data':'I-back up ang data ko','Download backup':'I-download ang backup','Restore backup':'Ibalik ang backup','Delete':'Burahin','Log':'Itala','Offline':'Walang internet',
+    'Price-risk alerts':'Babala sa panganib ng presyo','Weather could not load':'Hindi ma-load ang panahon'
+  };
+  var PH = { 'Type your barangay':'I-type ang barangay mo', 'e.g. 12000':'hal. 12000', 'Valencia public market, DA price bulletin':'' };
+  var lang = LS.getItem('fe_lang') || 'en', orig = new WeakMap(), busy = false;
+  function tx(node) {
+    var t = node.nodeValue, k = t.trim(); if (!k) return;
+    if (!orig.has(node) && D[k]) orig.set(node, t);
+    var o = orig.has(node) ? orig.get(node).trim() : null;
+    if (o === null) return;
+    var want = lang === 'fil' ? D[o] : o;
+    if (want && k !== want) node.nodeValue = t.replace(k, want);
+  }
+  function walk(root) {
+    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), n;
+    while ((n = w.nextNode())) { var p = n.parentNode.nodeName; if (p !== 'SCRIPT' && p !== 'STYLE') tx(n); }
+  }
+  function apply() {
+    busy = true; walk(document.body);
+    var ph = document.querySelectorAll('input[placeholder]');
+    for (var i = 0; i < ph.length; i++) { var e = ph[i]; if (!e.dataset.ph) e.dataset.ph = e.placeholder; var v = PH[e.dataset.ph]; e.placeholder = (lang === 'fil' && v) ? v : e.dataset.ph; }
+    document.documentElement.lang = lang === 'fil' ? 'fil' : 'en';
+    var b = $('lg'); if (b) { b.textContent = lang === 'fil' ? 'FIL' : 'EN'; b.setAttribute('aria-label', lang === 'fil' ? 'Palitan ang wika. Ngayon: Filipino' : 'Switch language. Now: English'); }
+    busy = false;
+  }
+  var th = $('th');
+  if (th) {
+    var lg = document.createElement('button'); lg.className = 'ib'; lg.id = 'lg'; lg.style.fontSize = '12px'; lg.style.fontWeight = '700';
+    th.parentNode.insertBefore(lg, th);
+    lg.onclick = function () { lang = lang === 'fil' ? 'en' : 'fil'; LS.setItem('fe_lang', lang); apply(); toast(lang === 'fil' ? 'Filipino na ang mga label.' : 'Labels are in English.'); };
+    var off = document.createElement('span'); off.className = 'off'; off.textContent = 'Offline'; th.parentNode.insertBefore(off, lg);
+  }
+  new MutationObserver(function () { if (!busy && lang === 'fil') { clearTimeout(apply.t); apply.t = setTimeout(apply, 30); } })
+    .observe(document.body, { childList: true, subtree: true, characterData: true });
+
+  /* ---------- quick-add button (phones) ---------- */
+  var fab = document.createElement('button'); fab.className = 'fab'; fab.innerHTML = '＋ <span>Log</span>';
+  fab.onclick = function () { location.hash = '#plan'; }; document.body.appendChild(fab);
+  function route() { document.body.classList.toggle('on-plan', location.hash === '#plan'); }
+  window.addEventListener('hashchange', route); route();
+
+  /* ---------- online / offline badge ---------- */
+  function net() { document.body.classList.toggle('offline', !navigator.onLine); }
+  window.addEventListener('online', net); window.addEventListener('offline', net); net();
+
+  /* ---------- backup / restore ---------- */
+  var KEYS = ['fe_recs', 'fe_px', 'fe_sug'];
+  var plan = $('v-plan');
+  if (plan) {
+    var c = document.createElement('div'); c.className = 'card'; c.style.marginTop = '14px';
+    c.innerHTML = '<h3>Back up my data</h3><p class="muted">Records live only in this browser. Download a copy so a cleared browser or lost phone does not erase them.</p>' +
+      '<button class="btn" id="bk">Download backup</button><label for="rs">Restore backup</label><input id="rs" type="file" accept="application/json">';
+    (plan.querySelector('.grid') || plan).appendChild(c);
+    $('bk').onclick = function () {
+      var o = { app: 'FarmEdge', saved: new Date().toISOString() }; KEYS.forEach(function (k) { try { o[k] = JSON.parse(LS.getItem(k) || '[]'); } catch (e) { o[k] = []; } });
+      var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(o, null, 2)], { type: 'application/json' }));
+      a.download = 'farmedge-backup-' + new Date().toISOString().slice(0, 10) + '.json'; a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000); toast('Backup downloaded.');
+    };
+    $('rs').onchange = function () {
+      var f = this.files[0]; if (!f) return; var r = new FileReader();
+      r.onload = function () {
+        try { var o = JSON.parse(r.result); if (o.app !== 'FarmEdge') throw 0; KEYS.forEach(function (k) { if (Array.isArray(o[k])) LS.setItem(k, JSON.stringify(o[k])); }); toast('Backup restored.'); setTimeout(function () { location.reload(); }, 700); }
+        catch (e) { toast('That file is not a FarmEdge backup.'); }
+      }; r.readAsText(f);
+    };
+  }
+
+  /* ---------- delete a planting record ---------- */
+  var rl = $('rl');
+  function addDel() {
+    var rows = rl ? rl.querySelectorAll(':scope > .row') : [];
+    rows.forEach(function (row, i) {
+      if (row.querySelector('.dz')) return;
+      var b = document.createElement('button'); b.className = 'dz'; b.textContent = lang === 'fil' ? 'Burahin' : 'Delete'; b.dataset.i = i; b.dataset.en = 'Delete'; row.appendChild(b);
+    });
+  }
+  if (rl) {
+    rl.addEventListener('click', function (e) {
+      var b = e.target.closest('.dz'); if (!b) return;
+      if (!confirm(lang === 'fil' ? 'Buburahin ang talaang ito?' : 'Delete this planting record?')) return;
+      try { var a = JSON.parse(LS.getItem('fe_recs') || '[]'); a.splice(+b.dataset.i, 1); LS.setItem('fe_recs', JSON.stringify(a)); location.reload(); } catch (x) { toast('Could not delete.'); }
+    });
+    new MutationObserver(addDel).observe(rl, { childList: true }); addDel();
+  }
+
+  /* ---------- tables become cards on phones ---------- */
+  document.querySelectorAll('table').forEach(function (t) {
+    var h = t.querySelector('tr'); if (!h) return; var names = [].map.call(h.children, function (x) { return x.textContent; });
+    t.classList.add('cardtbl');
+    [].slice.call(t.querySelectorAll('tr')).slice(1).forEach(function (r) { [].forEach.call(r.children, function (td, i) { td.dataset.l = names[i] || ''; }); });
+  });
+
+  /* ---------- offline support ---------- */
+  if ('serviceWorker' in navigator && /^https:|^http:\/\/localhost|^http:\/\/127\./.test(location.href.split('/').slice(0, 3).join('/'))) {
+    navigator.serviceWorker.register('sw.js').catch(function () {});
+  }
+
+  apply();
+})();/* FarmEdge service worker: app shell works offline; weather requests always go to the network. */
+var V = 'farmedge-v1', SHELL = ['./', 'index.html', 'addons.js', 'manifest.webmanifest', 'icon.svg'];
+self.addEventListener('install', function (e) { e.waitUntil(caches.open(V).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); })); });
+self.addEventListener('activate', function (e) { e.waitUntil(caches.keys().then(function (k) { return Promise.all(k.filter(function (x) { return x !== V; }).map(function (x) { return caches.delete(x); })); }).then(function () { return self.clients.claim(); })); });
+self.addEventListener('fetch', function (e) {
+  var u = new URL(e.request.url);
+  if (e.request.method !== 'GET' || u.origin !== location.origin) return;
+  e.respondWith(fetch(e.request).then(function (r) { var cp = r.clone(); caches.open(V).then(function (c) { c.put(e.request, cp); }); return r; }).catch(function () { return caches.match(e.request).then(function (m) { return m || caches.match('index.html'); }); }));
+});
